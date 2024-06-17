@@ -3,18 +3,126 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
-static void write(int fd, void* ptr, size_t size) {
+#define PROGRAM 3
 
+#define O_RDONLY        0        /* open for reading only */
+#define O_WRONLY        1        /* open for writing only */
+#define O_RDWR          2        /* open for reading and writing */
+#define O_CREAT         64       /* create file if it does not exist */
+#define O_EXCL          128      /* error if O_CREAT and the file exists */
+#define O_NOCTTY        256      /* do not assign controlling terminal */
+#define O_TRUNC         512      /* truncate size to 0 */
+#define O_APPEND        1024     /* append on each write */
+#define O_NONBLOCK      2048     /* non-blocking mode */
+#define O_DSYNC         4096     /* synchronous writes */
+#define FASYNC          8192     /* signal-driven I/O */
+#define O_DIRECT        16384    /* direct disk access hints */
+#define O_LARGEFILE     32768    /* allow large file opens */
+#define O_DIRECTORY     65536    /* must be a directory */
+#define O_NOFOLLOW      131072   /* do not follow symbolic links */
+#define O_NOATIME       262144   /* do not update access times */
+#define O_CLOEXEC       524288   /* set close_on_exec */
+#define O_PATH          1048576  /* resolve pathname but do not open file */
+#define O_TMPFILE       2097152  /* create unnamed temporary file */
+
+#define PARALEL_PORT 0x278
+#define OPEN 1
+#define CLOSE 2
+#define READ 3
+#define WRITE 4
+#define FINISH 0
+#define EOF -1
+
+static inline void exit() {
+	for (;;)
+		asm("hlt");
 }
 
 static void outb(uint16_t port, uint8_t value) {
 	asm("outb %0,%1" : /* empty */ : "a" (value), "Nd" (port) : "memory");
 }
 
+static void out(uint16_t port, uint32_t value) {
+  asm("out %0, %1" : : "a"(value), "Nd" (port) : "memory");
+}
+
+static int in(uint16_t port) {
+  int ret;
+  asm("in %1, %0" : "=a"(ret) : "Nd"(port));
+  return ret;
+}
+
 static char inb(uint16_t port) {
-    char ret;
-    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
+  char ret;
+  asm("inb %1, %0" : "=a"(ret) : "Nd"(port));
+  return ret;
+}
+
+void
+printf(const char *fmt, ...);
+
+static int open(const char* file_name, int flags, int mode) {
+  out(PARALEL_PORT, OPEN);
+  int i;
+  for (i = 0; file_name[i]; i++) {
+    outb(PARALEL_PORT, file_name[i]);
+  }
+  outb(PARALEL_PORT, file_name[i]);
+
+  out(PARALEL_PORT, flags);
+  out(PARALEL_PORT, mode);
+
+  int fd = in(PARALEL_PORT);
+
+  return fd;
+}
+
+static int close(int fd) {
+  
+  out(PARALEL_PORT, CLOSE);
+  out(PARALEL_PORT, fd);
+
+  int status = in(PARALEL_PORT);
+  out(PARALEL_PORT, FINISH);
+  return status;
+}
+
+size_t read(int fd, void* buf, size_t count) {
+  char* my_buf = (char*) buf;
+
+  out(PARALEL_PORT, READ);
+  out(PARALEL_PORT, fd);
+  size_t ret = 0;
+  for (int i = 0; i < count; i++) {
+    char c = inb(PARALEL_PORT);
+    // printf("%c\n", c); 
+    if (c == EOF) break;
+
+    my_buf[i] = c;
+    ret++;
+  }
+
+  out(PARALEL_PORT, FINISH);
+
+  return ret;
+}
+
+size_t write(int fd, void* buf, size_t count) {
+
+  char* my_buf = (char*) buf;
+
+  out(PARALEL_PORT, WRITE);
+  out(PARALEL_PORT, fd);
+  size_t ret = 0;
+
+  for (int i = 0; i < count; i++) {
+    outb(PARALEL_PORT, my_buf[i]);
+    ret++;
+  }
+
+  out(PARALEL_PORT, FINISH);
+
+  return ret;
 }
 
 static char getchar() {
@@ -154,7 +262,7 @@ _start(void) {
 	const char *p;
 	uint16_t port = 0xE9;
 
-
+#if PROGRAM == 1
     int a = 5;
     int b = 6;
   
@@ -164,9 +272,44 @@ _start(void) {
     b = scan_int();
 
     printf("%d + %d = %d\n", a, b, (a + b));
+#elif PROGRAM == 2
 
+    int fd = open("primer.txt", O_RDONLY, 0);
+    printf("%d\n", fd);
+    if (fd < 0) {
+      printf("Greska u otvaranju fajla");
+      exit();
+    }
 
+    char buf[20];
+    size_t size;
 
-	for (;;)
-		asm("hlt");
+    do {
+      size = read(fd, buf, 20);
+      for (int i = 0; i < size; i++) {
+        printf("%c", buf[i]);
+      } 
+    } while (size == 20);
+
+    close(fd);
+
+#elif PROGRAM == 3
+
+    int fd = open("primer.txt", O_WRONLY | O_TRUNC, 0777);
+    printf("%d\n", fd);
+    if (fd < 0) {
+      printf("Greska u otvaranju fajla");
+      exit();
+    }
+    
+    char tekst[] = "Neki tekst";
+
+    write(fd, tekst, sizeof(tekst) - 1);
+
+    close(fd);
+
+#endif
+  for (;;) {
+    asm volatile("hlt");
+  }
 }

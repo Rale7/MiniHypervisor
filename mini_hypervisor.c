@@ -11,6 +11,13 @@
 #include <pthread.h>
 #include <getopt.h>
 #include <pty.h>
+#include <semaphore.h>
+
+#define OPEN 1
+#define CLOSE 2
+#define READ 3
+#define WRITE 4
+#define FINISH 0
 
 #define PDE64_PRESENT 1
 #define PDE64_RW (1U << 1)
@@ -62,6 +69,15 @@ int init_hypervisor(struct hypervisor* hypervisor) {
 
 }
 
+struct file {
+    int fd;
+    int flags;
+    mode_t mode;
+    int cnt;
+    struct file* next;
+    char ime[50];
+};
+
 //  Struktura koja definise jednog gosta
 //
 //  vm_fd - fajl deskriptor koji komunicira sa odredjenim vm-om
@@ -71,10 +87,15 @@ int init_hypervisor(struct hypervisor* hypervisor) {
 struct guest {
     int vm_fd;
     int vm_vcpu;
-    char* mem;
-    struct kvm_run* kvm_run;
     int pty_master;
     int pty_slave;
+    int lock;
+    int id;
+    char* mem;
+    struct kvm_run* kvm_run;
+    struct file* file_head;
+    struct file** file_indirect;
+    struct file* current_file;
 };
 
 //  Kreira novog gosta i vraca 0 pri uspehu,
@@ -272,6 +293,203 @@ int exit_halt(struct guest* vm) {
     return 1;
 }
 
+sem_t file_mutex;
+
+struct file* init_file() {
+
+    struct file* new_file = (struct file*) malloc(sizeof(struct file));
+    if (new_file == NULL) {
+        perror("GRESKA: U alokaciji novog fajla\n");
+        exit(EXIT_FAILURE);
+    }
+
+    new_file->cnt = 0;
+    new_file->next = NULL;
+    new_file->flags = -1;
+    new_file->mode = -1;
+    new_file->fd = -1;
+
+    return new_file; 
+}
+
+int start_file_operation(struct guest* vm, int operation) {
+    sem_wait(&file_mutex);
+    vm->lock = operation;
+
+    if (operation == OPEN) {
+        struct file* new_file = init_file(); 
+
+        *vm->file_indirect = new_file;
+        vm->file_indirect = &new_file->next;
+        vm->current_file = new_file;
+    }
+
+    return 0;
+}
+
+int end_file_operation(struct guest* vm) {
+    sem_post(&file_mutex);
+    vm->lock = 0;
+    vm->current_file = NULL;
+    return 0;
+}
+
+int check_path_exists(struct guest* vm) {
+
+    char path[200];
+    sprintf(path, "vm_%d_", vm->id);
+    
+    strcat(path, vm->current_file->ime);
+    if (access(path, F_OK) == 0) {
+        return open(path, vm->current_file->flags, vm->current_file->mode);
+    } else {
+        return -1;
+    }
+}
+
+void create_local_copy(struct guest* vm) {
+
+    char path[200];
+    sprintf(path, "vm_%d_", vm->id);
+    strcat(path, vm->current_file->ime);
+
+    open(path, O_CREAT, 0777);
+
+}
+
+int opened_file_op_flags(struct guest* vm, int data) {
+
+    if (vm->current_file->flags == -1) {
+        vm->current_file->flags = data;
+    } else {
+        vm->current_file->mode = data;
+
+        int local_fd = check_path_exists(vm);
+
+        if (local_fd < 0) {
+            if (vm->current_file->flags & (O_RDWR | O_WRONLY | O_TRUNC | O_APPEND)) {
+                create_local_copy(vm);
+                vm->current_file->fd = check_path_exists(vm);
+            } else {
+                vm->current_file->fd = open(vm->current_file->ime, vm->current_file->flags, vm->current_file->mode);
+            }
+        } else {
+            vm->current_file->fd = local_fd;
+        }
+    }
+
+    return 0;
+}
+
+int opened_file_op_send_fd(struct guest* vm) {
+    *((int*)((char*) vm->kvm_run + vm->kvm_run->io.data_offset)) = vm->current_file->fd;
+    return end_file_operation(vm);
+}
+
+int opened_file_op_name(struct guest* vm, char data) {
+    vm->current_file->ime[vm->current_file->cnt++] = data;
+    return 0;
+}
+
+int get_file_descriptor(struct guest* vm, int data) {
+
+    for (struct file* current = vm->file_head; current; current = current->next) {
+
+        if (current->fd == data) {
+            vm->current_file = current;
+            break;
+        }
+    }
+
+    return 0;
+}
+
+int close_op_status(struct guest* vm) {
+
+    int status;
+    if (vm->current_file == NULL) status = -1;
+    else status = close(vm->current_file->fd);
+
+    for (struct file** indirect = &vm->file_head; *indirect; indirect = &(*indirect)->next) {
+        if (*indirect == vm->current_file) {
+            *indirect = vm->current_file->next;
+            break;
+        }
+    }
+
+    free(vm->current_file);
+    *((int*)((char*) vm->kvm_run + vm->kvm_run->io.data_offset)) = status;
+
+    return 0;
+}
+
+int read_file(struct guest* vm) {
+
+    if (vm->current_file == NULL) {
+        *((char*) vm->kvm_run + vm->kvm_run->io.data_offset) = EOF;
+        return 0;
+    }
+
+    char c;
+    int status = read(vm->current_file->fd, &c, 1);
+
+    *((char*) vm->kvm_run + vm->kvm_run->io.data_offset) = status == 1 ? c : EOF;
+    return 0;
+
+}
+
+int write_file(struct guest* vm, char data) {
+
+    if (vm->current_file == NULL) {
+        *((char*) vm->kvm_run + vm->kvm_run->io.data_offset) = EOF;
+        return 0;
+    }
+
+    write(vm->current_file->fd, &data, 1);
+
+    return 0;
+
+}
+
+int handle_file(struct guest* vm) {
+
+    if (vm->kvm_run->io.direction == KVM_EXIT_IO_OUT && vm->kvm_run->io.size == sizeof(int)) {
+        
+        int data = *((int*)((char*)vm->kvm_run + vm->kvm_run->io.data_offset));
+
+        if (vm->lock == 0) {
+            return start_file_operation(vm, data);
+        } else if (vm->lock == OPEN) {
+            return opened_file_op_flags(vm, data);
+        } else if (data == FINISH) {
+            return end_file_operation(vm);
+        } else {
+            return get_file_descriptor(vm, data);
+        }
+
+    } else if (vm->kvm_run->io.direction == KVM_EXIT_IO_OUT && vm->kvm_run->io.size == sizeof(char)) {
+        char data = *((char*) vm->kvm_run + vm->kvm_run->io.data_offset);
+        if (vm->lock == OPEN) {
+            return opened_file_op_name(vm, data);
+        } else if (vm->lock == WRITE) {
+            return write_file(vm, data);
+        }
+    } else if (vm->kvm_run->io.direction == KVM_EXIT_IO_IN && vm->kvm_run->io.size == sizeof(int)) {
+        if (vm->lock == CLOSE) {
+            return close_op_status(vm);
+        } else if (vm->lock == OPEN) {
+            return opened_file_op_send_fd(vm);
+        }
+    } else if (vm->kvm_run->io.direction == KVM_EXIT_IO_IN && vm->kvm_run->io.size == sizeof(char)) {
+        if (vm->lock == READ) {
+            return read_file(vm);
+        }
+    } 
+
+    return 0;
+
+}
+
 int exit_io(struct guest* vm) {
     if (vm->kvm_run->io.direction == KVM_EXIT_IO_OUT && vm->kvm_run->io.port == 0xE9) {
         char c = *((char*)vm->kvm_run + vm->kvm_run->io.data_offset);
@@ -282,6 +500,8 @@ int exit_io(struct guest* vm) {
         read(vm->pty_master, &c, sizeof(char));
         *((char*)vm->kvm_run + vm->kvm_run->io.data_offset) = c;
         return 0;
+    } else if (vm->kvm_run->io.port == 0x278) {
+        handle_file(vm);
     } else {
         fprintf(stderr, "Invalid port %d\n", vm->kvm_run->io.port);
         return -1;
@@ -354,6 +574,8 @@ pthread_t start_guest(struct guest* vm, FILE* img, int starting_adress) {
 
 int init_guest(struct hypervisor* hypervisor, struct guest* vm, size_t mem_size, enum PageSize page_size, FILE* img) {
 
+    static int incId = 0;
+
     int starting_address;
 
     if (create_guest(hypervisor, vm) < 0) return -1;
@@ -362,7 +584,11 @@ int init_guest(struct hypervisor* hypervisor, struct guest* vm, size_t mem_size,
     if (create_kvm_run(hypervisor, vm) < 0) return - 1; 
     if ((starting_address = setup_long_mode(vm, mem_size, page_size)) < 0) return -1;
     if (setup_registers(vm) < 0) return -1;
-
+    vm->lock = 0;
+    vm->file_head = NULL;
+    vm->file_indirect= &vm->file_head;
+    vm->current_file = NULL;
+    vm->id = incId++;
 
     return starting_address;
 
@@ -404,6 +630,12 @@ int main(int argc, char* argv[]) {
 
     int num_of_vms = argc - optind;
     pthread_t* vms = (pthread_t*) malloc(sizeof(pthread_t) * (num_of_vms));
+
+    if (sem_init(&file_mutex, 0, 1) < 0) {
+        perror("GRESKA: Neuspesan sem_init\n");
+        fprintf(stderr, "sem_init %s\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
 
     for (int i = optind; i < argc; i++) {
 
