@@ -3,7 +3,7 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
-#define PROGRAM 3
+#define PROGRAM 4
 
 #define O_RDONLY        0        /* open for reading only */
 #define O_WRONLY        1        /* open for writing only */
@@ -46,6 +46,14 @@ static void out(uint16_t port, uint32_t value) {
   asm("out %0, %1" : : "a"(value), "Nd" (port) : "memory");
 }
 
+static void outq(uint16_t port, uint64_t value) {
+  uint32_t val1 = value & ~0;
+  uint32_t val2 = (value >> 32) & ~0;
+
+  asm ("out %0, %1" : : "a" (val1), "Nd" (port) : "memory");
+  asm ("out %0, %1" : : "a" (val2), "Nd" (port) : "memory");
+}
+
 static int in(uint16_t port) {
   int ret;
   asm("in %1, %0" : "=a"(ret) : "Nd"(port));
@@ -83,46 +91,25 @@ static int close(int fd) {
   out(PARALEL_PORT, fd);
 
   int status = in(PARALEL_PORT);
-  out(PARALEL_PORT, FINISH);
   return status;
 }
 
 size_t read(int fd, void* buf, size_t count) {
-  char* my_buf = (char*) buf;
-
   out(PARALEL_PORT, READ);
-  out(PARALEL_PORT, fd);
-  size_t ret = 0;
-  for (int i = 0; i < count; i++) {
-    char c = inb(PARALEL_PORT);
-    // printf("%c\n", c); 
-    if (c == EOF) break;
-
-    my_buf[i] = c;
-    ret++;
-  }
-
-  out(PARALEL_PORT, FINISH);
-
-  return ret;
+  out(PARALEL_PORT, fd); 
+  outq(PARALEL_PORT, (uint64_t) buf);
+  outq(PARALEL_PORT, (uint64_t) count);
+  
+  return in(PARALEL_PORT);
 }
 
 size_t write(int fd, void* buf, size_t count) {
-
-  char* my_buf = (char*) buf;
-
   out(PARALEL_PORT, WRITE);
-  out(PARALEL_PORT, fd);
-  size_t ret = 0;
-
-  for (int i = 0; i < count; i++) {
-    outb(PARALEL_PORT, my_buf[i]);
-    ret++;
-  }
-
-  out(PARALEL_PORT, FINISH);
-
-  return ret;
+  out(PARALEL_PORT, fd); 
+  outq(PARALEL_PORT, (uint64_t) buf);
+  outq(PARALEL_PORT, (uint64_t) count);
+  
+  return in(PARALEL_PORT);
 }
 
 static char getchar() {
@@ -295,18 +282,60 @@ _start(void) {
 
 #elif PROGRAM == 3
 
-    int fd = open("primer.txt", O_WRONLY | O_TRUNC, 0777);
+    int fd = open("primer.txt", O_WRONLY | O_TRUNC | O_CREAT, 0777);
     printf("%d\n", fd);
     if (fd < 0) {
       printf("Greska u otvaranju fajla");
       exit();
     }
     
-    char tekst[] = "Neki tekst";
+    char tekst[] = "Neki tekst blablabla";
 
     write(fd, tekst, sizeof(tekst) - 1);
 
     close(fd);
+
+    fd = open("primer.txt", O_RDONLY, 0);
+    printf("%d\n", fd);
+    if (fd < 0) {
+      printf("Greska u otvaranju fajla");
+      exit();
+    }
+
+    char buf[20];
+    size_t size;
+
+    do {
+      size = read(fd, buf, 20);
+      for (int i = 0; i < size; i++) {
+        printf("%c", buf[i]);
+      } 
+    } while (size == 20);
+
+    close(fd);
+#elif PROGRAM == 4
+
+  int fd1 = open("primer1.txt", O_RDONLY, 0);
+  if (fd1 < 0) {
+    printf("Greska pri otvaranju fajla primer1.txt\n");
+    exit();
+  }
+
+  int fd2 = open("primer2.txt", O_WRONLY | O_CREAT | O_TRUNC, 0);
+  if (fd2 < 0) {
+    printf("Greska pri otvaranju fajla %s\n", "primer.txt");
+  }
+
+  char buf[20];
+  int size = 0;
+
+  do {
+    size = read(fd1, buf, 20);
+    write(fd2, buf, size);
+  } while (size == 20);
+
+  close(fd1);
+  close(fd2);
 
 #endif
   for (;;) {
