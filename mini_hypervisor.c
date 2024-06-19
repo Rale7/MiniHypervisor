@@ -293,7 +293,7 @@ int setup_registers(struct guest* vm) {
 
     regs.rflags = 2;
     regs.rip = 0;
-    regs.rsp = 1 << 21;
+    regs.rsp = 1 << 19;
 
     if (ioctl(vm->vm_vcpu, KVM_SET_REGS, &regs) < 0) {
         perror("GRESKA: Nesupesan ioctl KVM_SET_REGS\n");
@@ -400,6 +400,11 @@ int end_file_operation(struct guest* vm) {
 }
 
 int return_fd_to_vm(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_IN || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     *((int*) data_offset) = vm->current_file->fd;
     return end_file_operation(vm);
 }
@@ -460,6 +465,11 @@ int check_path_exists(struct guest* vm) {
 }
 
 int wait_for_mode(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+   
     vm->current_file->mode = data;
 
     if (check_path_exists(vm)) {
@@ -475,6 +485,11 @@ int wait_for_mode(struct guest* vm, uint32_t data, void* data_offset) {
 }
 
 int wait_for_flag(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     vm->current_file->flags = data;
     vm->current_file_state = &wait_for_mode;
 
@@ -482,6 +497,11 @@ int wait_for_flag(struct guest* vm, uint32_t data, void* data_offset) {
 }
 
 int reading_name(struct guest* vm, uint32_t data, void* data_offset) {
+
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint8_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
 
     char c = (char) (data & 0xFF);
 
@@ -497,6 +517,11 @@ int reading_name(struct guest* vm, uint32_t data, void* data_offset) {
 }
 
 int wait_for_read_status(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_IN || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     void* addr = virtual_to_physical_add(vm, vm->current_file->addr);
     int status = read(vm->current_file->fd, addr, vm->current_file->size);
     *((int*) data_offset) = status; 
@@ -505,6 +530,11 @@ int wait_for_read_status(struct guest* vm, uint32_t data, void* data_offset) {
 }
 
 int wait_for_write_status(struct guest* vm, u_int32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_IN || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     void* addr = virtual_to_physical_add(vm, vm->current_file->addr);
     int status = write(vm->current_file->fd, addr, vm->current_file->size);
     *((int*) data_offset) = status;
@@ -512,6 +542,11 @@ int wait_for_write_status(struct guest* vm, u_int32_t data, void* data_offset) {
 }
 
 int wait_for_second_size_half(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     vm->current_file->size |= ((uint64_t) data << 32);
     if (vm->lock == READ) {
         vm->current_file_state = &wait_for_read_status;
@@ -522,6 +557,11 @@ int wait_for_second_size_half(struct guest* vm, uint32_t data, void* data_offset
 }
 
 int wait_for_first_size_half(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     vm->current_file->size = 0;
     vm->current_file->size = data;
     vm->current_file_state = &wait_for_second_size_half;
@@ -529,12 +569,22 @@ int wait_for_first_size_half(struct guest* vm, uint32_t data, void* data_offset)
 }
 
 int wait_for_second_addr_half(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     vm->current_file->addr |= ((uint64_t)data << 32);
     vm->current_file_state = &wait_for_first_size_half;
     return 0;
 }
 
 int wait_for_first_addr_half(struct guest* vm, uint32_t data, void* data_offset) {
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     vm->current_file->addr = 0;
     vm->current_file->addr = data;
     vm->current_file_state = &wait_for_second_addr_half;
@@ -542,6 +592,12 @@ int wait_for_first_addr_half(struct guest* vm, uint32_t data, void* data_offset)
 }
 
 int wait_for_close_status(struct guest* vm, uint32_t data, void* data_offset) {
+
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_IN|| vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     int status = close(vm->current_file->fd);
     *((int*) data_offset) = status;
 
@@ -558,7 +614,18 @@ int wait_for_close_status(struct guest* vm, uint32_t data, void* data_offset) {
 }
 
 int wait_for_fd(struct guest* vm, uint32_t data, void* data_offset) {
+
+    if (vm->kvm_run->io.direction != KVM_EXIT_IO_OUT || vm->kvm_run->io.size != sizeof(uint32_t)) {
+        perror("GRESKA: Vm nije ispostovan protokol\n");
+        return -1;
+    }
+
     get_file_descriptor(vm, data);
+
+    if (vm->current_file == NULL) {
+        perror("GRESKA: Vm: nepostoji file deskriptor\n");
+        return -1;
+    }
 
     if (vm->lock == READ || vm->lock == WRITE) {
         vm->current_file_state = &wait_for_first_addr_half;
@@ -574,12 +641,10 @@ int start_file_operation(struct guest* vm, uint32_t operation, void* data_offset
 
     if (operation == OPEN) {
         struct file* new_file = init_file(); 
-
         new_file->next = vm->file_head;
         vm->file_head = new_file; 
         vm->current_file = new_file;
         vm->current_file_state = &reading_name;
-
     } else {
         vm->current_file_state = &wait_for_fd; 
     }
@@ -587,26 +652,12 @@ int start_file_operation(struct guest* vm, uint32_t operation, void* data_offset
     return 0;
 }
 
-int opened_file_op_send_fd(struct guest* vm) {
-    *((int*)((char*) vm->kvm_run + vm->kvm_run->io.data_offset)) = vm->current_file->fd;
-    return end_file_operation(vm);
-}
-
-int opened_file_op_name(struct guest* vm, char data) {
-    vm->current_file->ime[vm->current_file->cnt++] = data;
-    return 0;
-}
-
-
 int handle_file(struct guest* vm) {
 
     void* data_offset = (char*)vm->kvm_run + vm->kvm_run->io.data_offset;
     int data = *((int*) data_offset);
 
     return vm->current_file_state(vm, data, data_offset);
-
-    return 0;
-
 }
 
 int exit_io(struct guest* vm) {
@@ -769,6 +820,11 @@ int main(int argc, char* argv[]) {
 
     if (init_hypervisor(&hypervisor) < 0) {
         printf("GRESKA: Nije moguce inicijalizovati hipervizora\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (page_size == MB2 && memory == SIZE2MB) {
+        perror("GRESKA: Ne moze se kreirati vm sa stranicom od 2mb i memorijom od 2mb");
         exit(EXIT_FAILURE);
     }
 
