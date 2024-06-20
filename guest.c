@@ -3,8 +3,6 @@
 #include <stdarg.h>
 #include <inttypes.h>
 
-#define PROGRAM 4
-
 #define O_RDONLY        0        /* open for reading only */
 #define O_WRONLY        1        /* open for writing only */
 #define O_RDWR          2        /* open for reading and writing */
@@ -261,10 +259,10 @@ _start(void) {
     printf("%d + %d = %d\n", a, b, (a + b));
 #elif PROGRAM == 2
 
-    int fd = open("primer.txt", O_RDONLY, 0);
+    int fd = open("primer1.txt", O_RDONLY, 0);
     printf("%d\n", fd);
     if (fd < 0) {
-      printf("Greska u otvaranju fajla");
+      printf("Greska u otvaranju fajla\n");
       exit();
     }
 
@@ -282,10 +280,10 @@ _start(void) {
 
 #elif PROGRAM == 3
 
-    int fd = open("primer.txt", O_WRONLY | O_TRUNC | O_CREAT, 0777);
+    int fd = open("primer1.txt", O_WRONLY | O_TRUNC | O_CREAT, 0777);
     printf("%d\n", fd);
     if (fd < 0) {
-      printf("Greska u otvaranju fajla");
+      printf("Greska u otvaranju fajla\n");
       exit();
     }
     
@@ -295,10 +293,10 @@ _start(void) {
 
     close(fd);
 
-    fd = open("primer.txt", O_RDONLY, 0);
+    fd = open("primer1.txt", O_RDONLY, 0);
     printf("%d\n", fd);
     if (fd < 0) {
-      printf("Greska u otvaranju fajla");
+      printf("Greska u otvaranju fajla\n");
       exit();
     }
 
